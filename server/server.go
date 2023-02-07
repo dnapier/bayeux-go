@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pcrawfor/bayeux-go/shared"
+	"github.com/dnapier/bayeux-go/shared"
 )
 
 // Server is the main Bayeux server object which manages connections, subscriptions and clients
@@ -347,13 +347,14 @@ Publish
 
 Example response
 [
-  {
-     "channel": "/some/channel",
-     "successful": true,
-     "id": "some unique message id"
-  }
-]
 
+	{
+	   "channel": "/some/channel",
+	   "successful": true,
+	   "id": "some unique message id"
+	}
+
+]
 */
 func (s *Server) publish(channel, id string, data interface{}) ([]byte, error) {
 

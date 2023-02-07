@@ -4,17 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/url"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/pcrawfor/bayeux-go/server"
-	"github.com/pcrawfor/bayeux-go/shared"
+
+	"github.com/dnapier/bayeux-go/server"
+	"github.com/dnapier/bayeux-go/shared"
 )
 
-const defaultHost = "localhost:4001/bayeux"
-const defaultKeepAliveSecs = 30
+const (
+	defaultHost          = "localhost:4001/bayeux"
+	defaultKeepAliveSecs = 30
+)
 
 const ( // iota is reset to 0
 	stateWSDisconnected     = iota // == 0
@@ -23,51 +25,26 @@ const ( // iota is reset to 0
 	stateBayeuxConnected    = iota
 )
 
-// Subscription is a subscription represents a subscription to a channel by the client
-// Each sub has a path representing the channel on bayeux, a messageChan which is recieve any messages sent to it and a connected indicator to indicate the state of the sub on the bayeux server
+// A Subscription is represents a subscription to a channel by the client
+// Each sub has...
+//   - a messageChan which is recieve any messages sent to it
 type Subscription struct {
-	channel   string
-	connected bool
+	channel   string // the channel path
+	connected bool   // a connected indicator to indicate the state of the sub on the bayeux server
 }
 
-func (f *Client) addSubscription(channel string) {
-	c := Subscription{channel: channel, connected: false}
-	f.subscriptions = append(f.subscriptions, &c)
+// A Message is a piece of data sent to a channel from the bayeux server
+type Message struct {
+	Channel string
+	Data    map[string]interface{}
+	Ext     map[string]interface{}
 }
 
-func (f *Client) removeSubscription(channel string) {
-	for i, sub := range f.subscriptions {
-		if channel == sub.channel {
-			f.subscriptions = append(f.subscriptions[:i], f.subscriptions[i+1:]...)
-		}
-	}
-}
-
-func (f *Client) updateSubscription(channel string, connected bool) {
-	s := f.getSubscription(channel)
-	s.connected = connected
-}
-
-func (f *Client) getSubscription(channel string) *Subscription {
-	for i, sub := range f.subscriptions {
-		if channel == sub.channel {
-			return f.subscriptions[i]
-		}
-	}
-	return nil
-}
-
-func (f *Client) resubscribeSubscriptions() {
-	for _, sub := range f.subscriptions {
-		fmt.Println("resubscribe: ", sub.channel)
-		f.subscribe(sub.channel)
-	}
-}
-
-// Client manages a client connection and interactions
+// A Client is a connection and a set of subscriptions
+// TODO: remap MessageChan to a set of subscription message channels one per active subscription
 type Client struct {
 	Host          string
-	MessageChan   chan Message // any messages recv'd by the client will be sent to the message channel - TODO: remap this to a set of subscription message channels one per active subscription
+	MessageChan   chan Message // Messages recv'd by the client will be sent to this message channel
 	conn          *Connection
 	bayeuxState   int
 	readyChan     chan bool
@@ -79,20 +56,21 @@ type Client struct {
 	core          shared.Core
 }
 
-// Message represents a message recv'd via the bayeux connection
-type Message struct {
-	Channel string
-	Data    map[string]interface{}
-	Ext     map[string]interface{}
-}
-
-// NewClient returns and instance of Client
+// NewClient creates a new client for a given host and returns a pointer to it
 func NewClient(host string) *Client {
 	if len(host) == 0 {
 		host = defaultHost
 	}
-	// instantiate a Client and return
-	return &Client{Host: host, bayeuxState: stateWSDisconnected, MessageChan: make(chan Message, 100), messageNumber: 0, keepAliveSecs: defaultKeepAliveSecs, keepAliveChan: make(chan bool), core: shared.Core{}}
+
+	return &Client{
+		Host:          host,
+		MessageChan:   make(chan Message, 100),
+		bayeuxState:   stateWSDisconnected,
+		messageNumber: 0,
+		keepAliveSecs: defaultKeepAliveSecs,
+		keepAliveChan: make(chan bool),
+		core:          shared.Core{},
+	}
 }
 
 // SetKeepAliveIntervalSeconds sets the keep alive interval for the client
@@ -100,9 +78,8 @@ func (f *Client) SetKeepAliveIntervalSeconds(secs int) {
 	f.keepAliveSecs = secs
 }
 
-// Start spins up the client run loop, connects to the server and sends handshake
+// Start spins up the main client loop
 func (f *Client) Start(ready chan bool) error {
-	fmt.Println("Starting...")
 	err := f.connectToServer()
 	if err != nil {
 		return err
@@ -114,74 +91,7 @@ func (f *Client) Start(ready chan bool) error {
 	return nil
 }
 
-// connectToServer opens the websocket connection to the bayeux server and initialize the client state
-func (f *Client) connectToServer() error {
-	fmt.Println("start client")
-	fmt.Println("connectToServer")
-
-	url, _ := url.Parse("ws://" + f.Host)
-	c, err := net.Dial("tcp", url.Host)
-
-	if err != nil {
-		fmt.Println("Error connecting to server: ", err)
-		return err
-	}
-
-	ws, resp, err := websocket.NewClient(c, url, nil, 1024, 1024)
-
-	if err != nil {
-		return err
-	}
-
-	f.bayeuxState = stateWSConnected
-
-	if resp != nil {
-		fmt.Println("Resp: ", resp)
-	}
-
-	conn := NewConnection(ws)
-	f.conn = conn
-	f.conn.writerConnected = true
-	f.conn.readerConnected = true
-	go conn.writer()
-	go conn.reader(f)
-
-	// close keep alive channel to stop any running keep alive
-	close(f.keepAliveChan)
-	f.keepAliveChan = make(chan bool)
-	go f.keepAlive()
-	return nil
-}
-
-// keepalive opens and run loop on a ticker and sends keepalive messages to the server
-func (f *Client) keepAlive() {
-	fmt.Println("START KEEP ALIVE")
-	c := time.Tick(time.Duration(f.keepAliveSecs) * time.Second)
-	for {
-		select {
-		case _, ok := <-f.keepAliveChan:
-			if !ok {
-				fmt.Println("exit keep alive")
-				return
-			}
-		case <-c:
-			fmt.Println("Send keep-alive: ", time.Now())
-			f.connect()
-		}
-
-	}
-	fmt.Println("exiting keepalive func")
-}
-
-// disconnectFromServer closes the websocket connection and set the bayeux client state
-func (f *Client) disconnectFromServer() {
-	fmt.Println("DISCONNECT FROM SERVER")
-	f.bayeuxState = stateWSDisconnected
-	f.conn.exit <- true
-	f.conn.ws.Close()
-}
-
-// ReaderDisconnect - called by the connection handler if the reader connection is dropped by the loss of a server connection
+// ReaderDisconnect is called by the connection handler if the reader connection is dropped by the loss of a server connection
 func (f *Client) ReaderDisconnect() {
 	f.readyChan <- false
 }
@@ -194,20 +104,16 @@ func (f *Client) Write(msg string) error {
 
 // HandleMessage parses and interprets a bayeux message response
 func (f *Client) HandleMessage(message []byte) error {
-	// parse the bayeux message and interpret the logic to set client state appropriately
-	resp := []server.BayeuxResponse{}
-	err := json.Unmarshal(message, &resp)
-	var fm server.BayeuxResponse
-
-	if err != nil {
-		fmt.Println("Error parsing json. ", err)
+	// parse the bayeux message and interprets the logic to set client state appropriately
+	var resp []server.BayeuxResponse
+	if err := json.Unmarshal(message, &resp); err != nil {
+		return fmt.Errorf("error marshalling json: %s", err)
 	}
 
 	for i := range resp {
-		fm = resp[i]
-		switch fm.Channel {
+		switch resp[i].Channel {
 		case shared.ChannelHandshake:
-			f.clientID = fm.ClientID
+			f.clientID = resp[i].ClientID
 			f.connect() // send bayeux connect message
 			f.bayeuxState = stateBayeuxConnected
 			f.readyChan <- true
@@ -220,32 +126,33 @@ func (f *Client) HandleMessage(message []byte) error {
 			f.disconnectFromServer()
 
 		case shared.ChannelSubscribe:
-			f.updateSubscription(fm.Subscription, fm.Successful)
+			f.updateSubscription(resp[i].Subscription, resp[i].Successful)
 
 		case shared.ChannelUnsubscribe:
-			if fm.Successful {
-				f.removeSubscription(fm.Subscription)
+			if resp[i].Successful {
+				f.removeSubscription(resp[i].Subscription)
 			}
+
 		default:
-			if fm.Data != nil {
-				if fm.ClientID == f.clientID {
+			if resp[i].Data != nil {
+				if resp[i].ClientID == f.clientID {
 					return nil
 				}
 				var data map[string]interface{}
 				var ext map[string]interface{}
 
-				if fm.Data != nil {
-					data = fm.Data.(map[string]interface{})
+				if resp[i].Data != nil {
+					data = resp[i].Data.(map[string]interface{})
 				}
 
-				if fm.Ext != nil {
-					ext = fm.Ext.(map[string]interface{})
+				if resp[i].Ext != nil {
+					ext = resp[i].Ext.(map[string]interface{})
 				}
 
 				// tell the client we got a message on a channel
 				go func(d, e map[string]interface{}) {
 					select {
-					case f.MessageChan <- Message{Channel: fm.Channel, Data: d, Ext: e}:
+					case f.MessageChan <- Message{Channel: resp[i].Channel, Data: d, Ext: e}:
 						return
 					case <-time.After(100 * time.Millisecond):
 						return
@@ -258,7 +165,7 @@ func (f *Client) HandleMessage(message []byte) error {
 	return nil
 }
 
-// Subscribe sends a subscribe message for the given channel
+// Subscribe sends a message to the server to subscribe to the given channel
 func (f *Client) Subscribe(channel string) error {
 	if len(channel) == 0 {
 		return errors.New("Channel must have a value.")
@@ -267,7 +174,7 @@ func (f *Client) Subscribe(channel string) error {
 	return f.subscribe(channel)
 }
 
-// Unsubscribe sends an unsubscribe message for the given channel
+// Unsubscribe sends a message to the server to unsubscribe from the given channel
 func (f *Client) Unsubscribe(channel string) error {
 	if len(channel) == 0 {
 		return errors.New("Channel must have a value.")
@@ -275,7 +182,7 @@ func (f *Client) Unsubscribe(channel string) error {
 	return f.unsubscribe(channel)
 }
 
-// Publish publishes a message to the Bayeux server
+// Publish sends a message to the server to publish a message
 func (f *Client) Publish(channel string, data map[string]interface{}) error {
 	return f.publish(channel, data)
 }
@@ -285,9 +192,9 @@ func (f *Client) Disconnect() {
 	f.disconnect()
 }
 
-/*
-Bayeux protocol messages
-*/
+/********************************************************
+ * 				Bayeux protocol messages  				*
+ ********************************************************/
 
 /*
 type BayeuxResponse struct {
@@ -304,19 +211,119 @@ type BayeuxResponse struct {
 }
 */
 
+// addSubscription adds a subscription to the client
+func (f *Client) addSubscription(channel string) {
+	c := Subscription{channel: channel, connected: false}
+	f.subscriptions = append(f.subscriptions, &c)
+}
+
+// removeSubscription removes a subscription from the client
+func (f *Client) removeSubscription(channel string) {
+	for i, sub := range f.subscriptions {
+		if channel == sub.channel {
+			f.subscriptions = append(f.subscriptions[:i], f.subscriptions[i+1:]...)
+		}
+	}
+}
+
+// updateSubscription updates the connected state of a subscription
+func (f *Client) updateSubscription(channel string, connected bool) {
+	s := f.getSubscription(channel)
+	s.connected = connected
+}
+
+// getSubscription returns a subscription for a given channelj
+func (f *Client) getSubscription(channel string) *Subscription {
+	for i, sub := range f.subscriptions {
+		if channel == sub.channel {
+			return f.subscriptions[i]
+		}
+	}
+	return nil
+}
+
+// resubscribeSubscriptions resubscribes all subscriptions to the server
+func (f *Client) resubscribeSubscriptions() {
+	for _, sub := range f.subscriptions {
+		fmt.Println("resubscribe: ", sub.channel)
+		if err := f.subscribe(sub.channel); err != nil {
+			fmt.Println("Error: could not resubscribe to channels: ", err)
+		}
+	}
+}
+
+// connectToServer opens the websocket connection to the bayeux server and initialize the client state
+func (f *Client) connectToServer() error {
+	u, err := url.Parse("ws://" + f.Host)
+	if err != nil {
+		return err
+	}
+
+	c, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	f.bayeuxState = stateWSConnected
+
+	if resp != nil {
+		fmt.Println("Resp: ", resp)
+	}
+
+	conn := NewConnection(c)
+
+	f.conn = conn
+	f.conn.writerConnected = true
+	f.conn.readerConnected = true
+	go conn.writer()
+	go conn.reader(f)
+
+	// close keep alive channel to stop any running keep alive
+	close(f.keepAliveChan)
+	f.keepAliveChan = make(chan bool)
+	go f.keepAlive()
+
+	return nil
+}
+
+// keepalive opens and run loop on a ticker and sends keepalive messages to the server
+func (f *Client) keepAlive() {
+	c := time.Tick(time.Duration(f.keepAliveSecs) * time.Second)
+	for {
+		select {
+		case _, ok := <-f.keepAliveChan:
+			if !ok {
+				fmt.Println("exit keep alive")
+				return
+			}
+		case <-c:
+			fmt.Println("Send keep-alive: ", time.Now())
+			f.connect()
+		}
+
+	}
+}
+
+// disconnectFromServer closes the websocket connection and set the bayeux client state
+func (f *Client) disconnectFromServer() {
+	f.bayeuxState = stateWSDisconnected
+	f.conn.exit <- true
+	if err := f.conn.ws.Close(); err != nil {
+		fmt.Println("Error closing websocket: ", err)
+	}
+}
+
 func (f *Client) handshake() {
 	message := server.BayeuxResponse{Channel: shared.ChannelHandshake, Version: "1.0", SupportedConnectionTypes: []string{"websocket"}}
-	err := f.writeMessage(message)
-	if err != nil {
+	if err := f.write(message); err != nil {
 		fmt.Println("Error generating handshake message")
 	}
 }
 
-// connect to Bayeux and send the connect message
+// connect to Bayeux and send a connect message
 func (f *Client) connect() {
 	message := server.BayeuxResponse{Channel: shared.ChannelConnect, ClientID: f.clientID, ConnectionType: "websocket"}
-	err := f.writeMessage(message)
-	if err != nil {
+	if err := f.write(message); err != nil {
 		fmt.Println("Error generating connect message")
 	}
 }
@@ -324,8 +331,7 @@ func (f *Client) connect() {
 // disconnect sends the disconnect message to the server
 func (f *Client) disconnect() {
 	message := server.BayeuxResponse{Channel: shared.ChannelDisconnect, ClientID: f.clientID}
-	err := f.writeMessage(message)
-	if err != nil {
+	if err := f.write(message); err != nil {
 		fmt.Println("Error generating connect message")
 	}
 }
@@ -333,10 +339,8 @@ func (f *Client) disconnect() {
 // subscribe the client to a channel
 func (f *Client) subscribe(channel string) error {
 	message := server.BayeuxResponse{Channel: shared.ChannelSubscribe, ClientID: f.clientID, Subscription: channel}
-	err := f.writeMessage(message)
-	if err != nil {
-		fmt.Println("Error generating subscribe message")
-		return err
+	if err := f.write(message); err != nil {
+		return fmt.Errorf("error generating subscribe message: %s", err)
 	}
 	return nil
 }
@@ -344,10 +348,8 @@ func (f *Client) subscribe(channel string) error {
 // unsubscribe from a channel
 func (f *Client) unsubscribe(channel string) error {
 	message := server.BayeuxResponse{Channel: shared.ChannelUnsubscribe, ClientID: f.clientID, Subscription: channel}
-	err := f.writeMessage(message)
-	if err != nil {
-		fmt.Println("Error generating unsubscribe message")
-		return err
+	if err := f.write(message); err != nil {
+		return fmt.Errorf("error generating unsubscribe message: %s", err)
 	}
 	return nil
 }
@@ -355,16 +357,14 @@ func (f *Client) unsubscribe(channel string) error {
 // publish sends a message to a channel
 func (f *Client) publish(channel string, data map[string]interface{}) error {
 	message := server.BayeuxResponse{Channel: channel, ClientID: f.clientID, ID: f.core.NextMessageID(), Data: data}
-	err := f.writeMessage(message)
-	if err != nil {
-		fmt.Println("Error generating unsubscribe message")
-		return err
+	if err := f.write(message); err != nil {
+		return fmt.Errorf("error generating unsubscribe message: %s", err)
 	}
 	return nil
 }
 
 // writeMessage encodes the json and send the message over the wire.
-func (f *Client) writeMessage(message server.BayeuxResponse) error {
+func (f *Client) write(message server.BayeuxResponse) error {
 	if !f.conn.Connected() {
 		// reconnect
 		fmt.Println("RECONNECT")
@@ -378,10 +378,10 @@ func (f *Client) writeMessage(message server.BayeuxResponse) error {
 
 	}
 
-	json, err := json.Marshal(message)
+	j, err := json.Marshal(message)
 	if err != nil {
 		return err
 	}
-	f.Write(string(json))
-	return nil
+
+	return f.Write(string(j))
 }

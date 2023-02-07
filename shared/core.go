@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"code.google.com/p/go-uuid/uuid"
+	"github.com/google/uuid"
 )
 
 // ChannelHandshake handshake channel path
@@ -36,5 +36,5 @@ func (c *Core) NextMessageID() string {
 // GenerateClientID generates a new UUID string
 func (c *Core) GenerateClientID() string {
 	rawID := uuid.New()
-	return strings.Replace(rawID, "-", "", -1)
+	return strings.Replace(rawID.String(), "-", "", -1)
 }

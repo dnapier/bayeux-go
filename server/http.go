@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	eventsource "github.com/antage/eventsource/http"
+	"github.com/antage/eventsource"
 	"github.com/gorilla/websocket"
 )
 
